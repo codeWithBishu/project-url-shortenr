@@ -3,26 +3,81 @@ var validUrl = require('valid-url')
 const shortid = require('shortid')
 const mongoose = require('mongoose')
 
-const isvalidRequest = function (requestBody) {
-    return Object.keys(requestBody).length > 0
-}
+const redis = require("redis");
 
-const baseUrl = 'http:localhost:3000'
 
-const createUrl= async (req, res) => {
+const  { promisify }  = require("util");
+
+/*...............+++++++++++++-------------Connect to redis------------+++++++++++++................*/
+
+const redisClient = redis.createClient(
+    15299,
+  "redis-15299.c212.ap-south-1-1.ec2.cloud.redislabs.com",
+  { no_ready_check: true }
+);
+redisClient.auth("v12G8BVygfk4R1rXA1j4DIlF1W5rXVGZ", function (err) {
+  if (err) throw err;
+});
+
+redisClient.on("connect", async function () {
+  console.log("Connected to Redis..");
+});
+
+
+/*........++++++++++++------------------+++++++++++++.........*/
+
+
+
+const body = (ele) => {
+    if (Object.keys(ele).length) return;
+    return `Please send some valid data in request body`;
+  };
+  
+  const check = (ele) => {
+    if (ele == undefined) {
+      return `is missing`;
+    }
+    if (typeof ele !== "string") {
+      return `should must be a string`;
+    }
+    ele = ele.trim();
+    if (!ele.length) {
+      return `can not be empty`;
+    }
+
+  };
+
+  const isValid = function (value) {
+     let reg = /^(http(s)?:\/\/.)?(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*$)/gmi
+     return reg.test(value)
+ }
+
+const baseUrl = 'http://localhost:3000'
+
+const urlShorten= async (req, res) => {
+    let message;
 
     let requestbody=req.body
-    if(!isvalidRequest(requestbody)) return res.status(400).send({status:false,messege:"request body is empty"})
+    if((message = body(requestbody))) {return res.status(400).send({status:false, messege:`${message}`})}
 
-    const {longUrl} = requestbody 
+    let {longUrl} = requestbody
+    longUrl = longUrl.trim()
+
+
+    if((message = check(longUrl))) {return res.status(400).send({status:false, message:`longUrl ${message}`})}
+
+    if(!isValid(longUrl)) {return res.status(400).send({status:false, message:"Entered longUrl is invalid "})}
+
+    
+
     if (!validUrl.isUri(baseUrl)) {
         
         return res.status(400).send({status:false, message:'Invalid base URL'})
     }
     
-    const urlCode = shortid.generate()
+    const urlCode = shortid.generate().toLowerCase()
 
-    if (validUrl.isWebUri(longUrl)) {
+    if (validUrl.isUri(longUrl)) {
         
         try {
 
@@ -30,7 +85,7 @@ const createUrl= async (req, res) => {
 
             if (url) 
             { 
-                res.status(200).send({message:"This url is already shorten", data:url}) 
+                res.status(200).send({status:true, message:"This url is already shorten", data:url}) 
             } else {
                 const shortUrl = baseUrl + '/' + urlCode
 
@@ -40,7 +95,7 @@ const createUrl= async (req, res) => {
                     urlCode
                 })
                 await url.save()
-                res.status(201).send({status:true, data:url})
+                res.status(201).send({status:true, data:{longUrl:url.longUrl,shortUrl:url.shortUrl,urlCode:url.urlCode}})
             }
         }
         
@@ -50,7 +105,7 @@ const createUrl= async (req, res) => {
         }
 
     } else {
-        res.status(400).send('Invalid longUrl')
+        res.status(400).send({status:false, message:'Invalid longUrl'})
     }
 }
 
@@ -60,45 +115,41 @@ const createUrl= async (req, res) => {
 
 
 
+const SET_ASYNC = promisify(redisClient.SET).bind(redisClient);
 
-// const getUrl =  async (req, res) => {
-//     try {
-//         const url = await Url.findOne({
-//             urlCode: req.params.urlCode
-//         })
-//         if (url) {
-//             return res.redirect(url.longUrl)
-//         } else {
-//             return res.status(404).send('No URL Found')
-//         }
-
-//     }
-//     catch (err) {
-//         console.error(err)
-//         res.status(500).send('Server Error')
-//     }
-// }
+const GET_ASYNC = promisify(redisClient.GET).bind(redisClient);
 
 
+const getUrl =  async (req, res) => {
+    try {
 
+        let cacheUrlData = await GET_ASYNC(`${req.params.urlCode}`)
+        let parsedData = JSON.parse(cacheUrlData)
+        if(cacheUrlData){
+            return res.status(302).redirect(parsedData)
+        }else{
 
+        const url = await Url.findOne({urlCode: req.params.urlCode})
+        if (url) {
+            await SET_ASYNC(`${req.params.urlCode}`, JSON.stringify(url.longUrl),"Ex",100)
+            return res.status(302).redirect(url.longUrl)
+        } else {
+            return res.status(404).send({status:false,message:'No URL Found'})
+        }
+    }
 
-
-
-const getUrl=async function(req,res){
-    let urlCode=req.params.urlCode
-    // if(!data) return res.send({status:false,msg:"url body is empty"})
-
-    let urlData= await Url.findOne({urlCode:urlCode})
-    if(!urlData) return res.status(400).send({status:false,msg:"urlcode is not found"})
-     return res.status(302).redirect(`${urlData.longUrl}`)
+    }
+    catch (err) {
+        console.error(err)
+        res.status(500).send({status:false,message:'Server Error'})
+    }
 }
 
 
-
-
-module.exports.createUrl = createUrl
+module.exports.urlShorten = urlShorten
 
 module.exports.getUrl = getUrl
+
+
 
 
